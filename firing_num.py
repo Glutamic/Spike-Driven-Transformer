@@ -1153,10 +1153,10 @@ def main():
             output_dir=output_dir,
             amp_autocast=amp_autocast,
         )
-        # if args.local_rank == 0:
+        if args.local_rank == 0:
             # non_zero_str = json.dumps(eval_metrics["non_zero"], indent=4)
             # firing_rate_str = json.dumps(eval_metrics["firing_rate"], indent=4)
-            # _logger.info("top-1:", eval_metrics["top1"])
+            _logger.info("top-1:", eval_metrics["top1"])
             # _logger.info("non_zero: ")
             # _logger.info(non_zero_str)
             # _logger.info("firing_rate: ")
