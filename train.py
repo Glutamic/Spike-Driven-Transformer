@@ -863,6 +863,12 @@ parser.add_argument(
     default=False,
     help="log training and validation metrics to wandb",
 )
+parser.add_argument(
+    "--use-smplified-model",  # if true, use a simplified model for faster inference
+    action="store_true",
+    default=False,
+    help="use a simplified model for faster inference",
+)
 
 _logger = logging.getLogger("train")
 stream_handler = logging.StreamHandler()
@@ -976,6 +982,7 @@ def main():
         spike_mode=args.spike_mode,
         dvs_mode=args.dvs_mode,
         TET=args.TET,
+        simplified=args.use_smplified_model,
     )
     if args.local_rank == 0:
         _logger.info(f"Creating model {args.model}")

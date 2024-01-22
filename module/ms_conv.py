@@ -181,6 +181,7 @@ class MS_SSA_Conv(nn.Module):
         spike_mode="lif",
         dvs=False,
         layer=0,
+        simplified=False,
     ):
         super().__init__()
         assert (
@@ -189,9 +190,46 @@ class MS_SSA_Conv(nn.Module):
         self.dim = dim
         self.dvs = dvs
         self.num_heads = num_heads
+        self.simplified = simplified
         if dvs:
             self.pool = Erode()
         self.scale = 0.125
+
+        if self.simplified:
+            self.centre_attn = True  # 是否使用中心注意力机制
+            self.attn_mat_skip_gain = 1
+            self.attn_mat_resid_gain = 1
+            self.centre_attn_gain = self.attn_mat_resid_gain
+            self.trainable_attn_mat_gains = True
+            uniform_causal_attn_mat = torch.ones(
+                (dim, dim), dtype=torch.float32
+            ) / torch.arange(1, dim + 1).view(-1, 1)
+            self.register_buffer(
+                "uniform_causal_attn_mat",
+                torch.tril(
+                    uniform_causal_attn_mat,
+                ).view(1, 1, 1, dim, dim),  # 中心化矩阵是一个下三角矩阵，确保自注意力模型只能看到当前位置及之前的位置，用view变为4维张量。
+                persistent=False,
+            )
+            self.register_buffer(
+                "diag",
+                torch.eye(dim).view(1, 1, 1, dim, dim),
+                persistent=False,
+            )
+            self.attn_mat_resid_gain = nn.Parameter(
+                self.attn_mat_resid_gain * torch.ones((1, self.num_heads, 1, 1)),
+                requires_grad=self.trainable_attn_mat_gains,
+            )
+            self.attn_mat_skip_gain = nn.Parameter(
+                self.attn_mat_skip_gain * torch.ones((1, self.num_heads, 1, 1)),  # attn_mat_skip_gain默认为1
+                requires_grad=self.trainable_attn_mat_gains,
+            )
+            self.centre_attn_gain = nn.Parameter(
+                self.centre_attn_gain * torch.ones((1, self.num_heads, 1, 1)),  # center_attn_gain默认设置为1，即attn_mat_resid_gain
+                requires_grad=self.trainable_attn_mat_gains
+                and self.centre_attn_gain != 0,
+            )
+
         self.q_conv = nn.Conv2d(dim, dim, kernel_size=1, stride=1, bias=False)
         self.q_bn = nn.BatchNorm2d(dim)
         if spike_mode == "lif":
@@ -210,8 +248,10 @@ class MS_SSA_Conv(nn.Module):
                 init_tau=2.0, detach_reset=True, backend="cupy"
             )
 
-        self.v_conv = nn.Conv2d(dim, dim, kernel_size=1, stride=1, bias=False)
-        # self.v_conv = nn.Identity()  # TODO: 需要改成单位矩阵
+        if not self.simplified:  # 是否使用简化后的模块
+            self.v_conv = nn.Conv2d(dim, dim, kernel_size=1, stride=1, bias=False)
+        else:
+            self.v_conv = nn.Identity()
         self.v_bn = nn.BatchNorm2d(dim)
         if spike_mode == "lif":
             self.v_lif = MultiStepLIFNode(tau=2.0, detach_reset=True, backend="cupy")
@@ -257,16 +297,26 @@ class MS_SSA_Conv(nn.Module):
         self.layer = layer
 
     def _myattn(self, q, k, v, x, hook=None):
-        qk = q.mul(k)
+        query_length, key_length = q.size(-2), k.size(-2)
+        dots = q.mul(k)
         if hook is not None:
-            hook[self._get_name() + str(self.layer) + "_qk_before"] = qk
+            hook[self._get_name() + str(self.layer) + "_qk_before"] = dots
         if self.dvs:
-            qk = self.pool(qk)
-        qk = qk.sum(dim=-2, keepdim=True)
-        # qk = self.talking_heads_lif(qk)  根据论文中的图片，不需要先拆分为多个注意力头
+            attn = self.pool(dots)
+        attn = attn.sum(dim=-2, keepdim=True)
         if hook is not None:
-            hook[self._get_name() + str(self.layer) + "_qk"] = qk.detach()
-        x = v.mul(qk)
+            hook[self._get_name() + str(self.layer) + "_qk"] = sn_attn.detach()
+        if self.centre_attn:
+            post_sm_bias_matrix = (
+                self.attn_mat_skip_gain * self.diag[:, :, :, :key_length, :key_length]
+            ) - self.centre_attn_gain * (
+                self.uniform_causal_attn_mat[
+                    :, :, :, key_length - query_length : key_length, :key_length
+                ]
+            )
+            new_attn_weights = attn + post_sm_bias_matrix
+        sn_attn = self.talking_heads_lif(new_attn_weights)
+        x = v.mul(sn_attn)
         if self.dvs:
             x = self.pool(x)
         if hook is not None:
@@ -292,7 +342,7 @@ class MS_SSA_Conv(nn.Module):
         return x
     
     def forward(self, x, hook=None):  # TODO: 在forward函数中更改注意力机制
-        T, B, C, H, W = x.shape
+        T, B, C, H, W = x.shape  # notice that x has extra dim T, and B, C, H, W is same as origin ViT model
         identity = x
         N = H * W
         x = self.shortcut_lif(x)
@@ -344,7 +394,10 @@ class MS_SSA_Conv(nn.Module):
             .contiguous()
         )  # T B head N C//h
 
-        x = self._attn(q, k, v, hook)
+        if not self.simplified:
+            x = self._attn(q, k, v, hook)
+        else:
+            x = self._myattn(q, k, v, hook)
         
         x = x.transpose(3, 4).reshape(T, B, C, H, W).contiguous()
         x = (
@@ -374,8 +427,10 @@ class MS_Block_Conv(nn.Module):
         spike_mode="lif",
         dvs=False,
         layer=0,
+        simplified=False,
     ):
         super().__init__()
+        # 调用了MS_SSA_Conv
         self.attn = MS_SSA_Conv(
             dim,
             num_heads=num_heads,
@@ -388,6 +443,7 @@ class MS_Block_Conv(nn.Module):
             spike_mode=spike_mode,
             dvs=dvs,
             layer=layer,
+            simplified=simplified,
         )
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         mlp_hidden_dim = int(dim * mlp_ratio)
@@ -400,6 +456,7 @@ class MS_Block_Conv(nn.Module):
         )
 
     def forward(self, x, hook=None):
+        # 这里的attn是调用的MS_SSA_Conv的forward函数的输出
         x_attn, attn, hook = self.attn(x, hook=hook)
         x, hook = self.mlp(x_attn, hook=hook)
         return x, attn, hook

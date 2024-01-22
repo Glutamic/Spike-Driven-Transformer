@@ -41,6 +41,7 @@ class SpikeDrivenTransformer(nn.Module):
         cml=False,
         pretrained=False,
         pretrained_cfg=None,
+        simplified=False,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -81,6 +82,7 @@ class SpikeDrivenTransformer(nn.Module):
                     spike_mode=spike_mode,
                     dvs=dvs_mode,
                     layer=j,
+                    simplified=simplified,
                 )
                 for j in range(depths)
             ]
@@ -138,6 +140,7 @@ class SpikeDrivenTransformer(nn.Module):
         return x, hook
 
 
+# register the spikeformer model with name "sdt" in timm registry
 @register_model
 def sdt(**kwargs):
     model = SpikeDrivenTransformer(
