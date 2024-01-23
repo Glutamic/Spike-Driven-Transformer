@@ -196,24 +196,25 @@ class MS_SSA_Conv(nn.Module):
         self.scale = 0.125
 
         if self.simplified:
+            print("--------------------using simplified model--------------------------")
             self.centre_attn = True  # 是否使用中心注意力机制
             self.attn_mat_skip_gain = 1
             self.attn_mat_resid_gain = 1
             self.centre_attn_gain = self.attn_mat_resid_gain
             self.trainable_attn_mat_gains = True
             uniform_causal_attn_mat = torch.ones(
-                (dim, dim), dtype=torch.float32
-            ) / torch.arange(1, dim + 1).view(-1, 1)
+                (dim // num_heads, dim // num_heads), dtype=torch.float32
+            ) / torch.arange(1, dim // num_heads + 1).view(-1, 1)
             self.register_buffer(
                 "uniform_causal_attn_mat",
                 torch.tril(
                     uniform_causal_attn_mat,
-                ).view(1, 1, 1, dim, dim),  # 中心化矩阵是一个下三角矩阵，确保自注意力模型只能看到当前位置及之前的位置，用view变为4维张量。
+                ).view(1, 1, 1, dim // num_heads, dim // num_heads),  # 中心化矩阵是一个下三角矩阵，确保自注意力模型只能看到当前位置及之前的位置，用view变为4维张量。
                 persistent=False,
             )
             self.register_buffer(
                 "diag",
-                torch.eye(dim).view(1, 1, 1, dim, dim),
+                torch.eye(dim // num_heads).view(1, 1, 1, dim // num_heads, dim // num_heads),
                 persistent=False,
             )
             self.attn_mat_resid_gain = nn.Parameter(
@@ -302,10 +303,10 @@ class MS_SSA_Conv(nn.Module):
         if hook is not None:
             hook[self._get_name() + str(self.layer) + "_qk_before"] = dots
         if self.dvs:
-            attn = self.pool(dots)
-        attn = attn.sum(dim=-2, keepdim=True)
+            dots = self.pool(dots)
+        attn = dots.sum(dim=-2, keepdim=True)
         if hook is not None:
-            hook[self._get_name() + str(self.layer) + "_qk"] = sn_attn.detach()
+            hook[self._get_name() + str(self.layer) + "_qk"] = attn.detach()
         if self.centre_attn:
             post_sm_bias_matrix = (
                 self.attn_mat_skip_gain * self.diag[:, :, :, :key_length, :key_length]
@@ -314,8 +315,11 @@ class MS_SSA_Conv(nn.Module):
                     :, :, :, key_length - query_length : key_length, :key_length
                 ]
             )
+            print(post_sm_bias_matrix.shape)
             new_attn_weights = attn + post_sm_bias_matrix
         sn_attn = self.talking_heads_lif(new_attn_weights)
+        print(v.shape)
+        print(sn_attn.shape)
         x = v.mul(sn_attn)
         if self.dvs:
             x = self.pool(x)
@@ -342,27 +346,31 @@ class MS_SSA_Conv(nn.Module):
         return x
     
     def forward(self, x, hook=None):  # TODO: 在forward函数中更改注意力机制
-        T, B, C, H, W = x.shape  # notice that x has extra dim T, and B, C, H, W is same as origin ViT model
+        T, B, C, H, W = x.shape  # (4, 2, 256, 8 ,8) notice that x has extra dim T, and B, C, H, W is same as origin ViT model
         identity = x
-        N = H * W
+        N = H * W  # 在ViT中，图片每一个patch宽高之积就是token的数量N，保持不变，不可分割
         x = self.shortcut_lif(x)
         if hook is not None:
             hook[self._get_name() + str(self.layer) + "_first_lif"] = x.detach()
 
         x_for_qkv = x.flatten(0, 1)
+        # print("x_for_qkv: ",x_for_qkv.shape)
         q_conv_out = self.q_conv(x_for_qkv)
+        # print("q_conv_out: ",q_conv_out.shape)
         q_conv_out = self.q_bn(q_conv_out).reshape(T, B, C, H, W).contiguous()
+        # print("q_conv_out: ",q_conv_out.shape)
         q_conv_out = self.q_lif(q_conv_out)
 
         if hook is not None:
             hook[self._get_name() + str(self.layer) + "_q_lif"] = q_conv_out.detach()
         q = (
-            q_conv_out.flatten(3)
-            .transpose(-1, -2)
-            .reshape(T, B, N, self.num_heads, C // self.num_heads)
-            .permute(0, 1, 3, 2, 4)
+            q_conv_out.flatten(3)  # T B C H W -> T B C N (4, 2, 256, 64)
+            .transpose(-1, -2)  # T B C N -> T B N C (4, 2, 64, 256)
+            .reshape(T, B, N, self.num_heads, C // self.num_heads)  # T B N Head C//h (4, 2, 64, 8, 32)
+            .permute(0, 1, 3, 2, 4)  # T B Head N C//h -> T B Head N C//h (4, 2, 8, 64, 32)
             .contiguous()
         )
+        # print("q: ", q.shape)  # T B Head N C//h (4, 2, 8, 64, 32)
 
         k_conv_out = self.k_conv(x_for_qkv)
         k_conv_out = self.k_bn(k_conv_out).reshape(T, B, C, H, W).contiguous()
@@ -378,6 +386,7 @@ class MS_SSA_Conv(nn.Module):
             .permute(0, 1, 3, 2, 4)
             .contiguous()
         )
+        # print("k: ", k.shape)
 
         v_conv_out = self.v_conv(x_for_qkv)
         v_conv_out = self.v_bn(v_conv_out).reshape(T, B, C, H, W).contiguous()
@@ -393,6 +402,7 @@ class MS_SSA_Conv(nn.Module):
             .permute(0, 1, 3, 2, 4)
             .contiguous()
         )  # T B head N C//h
+        # print("v: ", v.shape)
 
         if not self.simplified:
             x = self._attn(q, k, v, hook)
