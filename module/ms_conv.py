@@ -197,24 +197,25 @@ class MS_SSA_Conv(nn.Module):
 
         if self.simplified:
             print("--------------------using simplified model--------------------------")
+            self.max_position_embeddings = 1024
             self.centre_attn = True  # 是否使用中心注意力机制
             self.attn_mat_skip_gain = 1
             self.attn_mat_resid_gain = 1
             self.centre_attn_gain = self.attn_mat_resid_gain
             self.trainable_attn_mat_gains = True
             uniform_causal_attn_mat = torch.ones(
-                (dim // num_heads, dim // num_heads), dtype=torch.float32
-            ) / torch.arange(1, dim // num_heads + 1).view(-1, 1)
+                (self.max_position_embeddings, self.max_position_embeddings), dtype=torch.float32
+            ) / torch.arange(1, self.max_position_embeddings + 1).view(-1, 1)
             self.register_buffer(
                 "uniform_causal_attn_mat",
                 torch.tril(
                     uniform_causal_attn_mat,
-                ).view(1, 1, 1, dim // num_heads, dim // num_heads),  # 中心化矩阵是一个下三角矩阵，确保自注意力模型只能看到当前位置及之前的位置，用view变为4维张量。
+                ).view(1, 1, 1, self.max_position_embeddings, self.max_position_embeddings),  # 中心化矩阵是一个下三角矩阵，确保自注意力模型只能看到当前位置及之前的位置，用view变为4维张量。
                 persistent=False,
             )
             self.register_buffer(
                 "diag",
-                torch.eye(dim // num_heads).view(1, 1, 1, dim // num_heads, dim // num_heads),
+                torch.eye(self.max_position_embeddings).view(1, 1, 1, self.max_position_embeddings, self.max_position_embeddings),
                 persistent=False,
             )
             self.attn_mat_resid_gain = nn.Parameter(
@@ -299,7 +300,7 @@ class MS_SSA_Conv(nn.Module):
 
     def _myattn(self, q, k, v, x, hook=None):
         query_length, key_length = q.size(-2), k.size(-2)
-        dots = q.mul(k)
+        dots = torch.matmul(q, k.transpose(-1, -2))  # 先不乘scale试试
         if hook is not None:
             hook[self._get_name() + str(self.layer) + "_qk_before"] = dots
         if self.dvs:
@@ -315,12 +316,12 @@ class MS_SSA_Conv(nn.Module):
                     :, :, :, key_length - query_length : key_length, :key_length
                 ]
             )
-            print(post_sm_bias_matrix.shape)
+            # print(post_sm_bias_matrix.shape)
             new_attn_weights = attn + post_sm_bias_matrix
         sn_attn = self.talking_heads_lif(new_attn_weights)
-        print(v.shape)
-        print(sn_attn.shape)
-        x = v.mul(sn_attn)
+        # print(v.shape)
+        # print(sn_attn.shape)
+        x = torch.matmul(sn_attn, v)
         if self.dvs:
             x = self.pool(x)
         if hook is not None:
