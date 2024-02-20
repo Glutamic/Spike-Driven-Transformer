@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=0 python -m torch.distributed.launch --nproc_per_node=1 --master_port 29501 firing_num.py -c ./conf/cifar100/2_256_300E_t4.yml --model sdt --spike-mode lif --resume ./output/train/20240126-093303-sdt-data-cifar100-t-4-spike-lif/model_best.pth.tar --no-resume-opt --use-smplified-model
