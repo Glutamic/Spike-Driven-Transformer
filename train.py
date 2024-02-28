@@ -993,7 +993,7 @@ def main():
                 )
             )
         )
-
+    exit()
     if args.num_classes is None:
         assert hasattr(
             model, "num_classes"

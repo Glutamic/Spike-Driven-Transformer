@@ -11,6 +11,7 @@ from datetime import datetime
 from spikingjelly.clock_driven import functional
 from spikingjelly.datasets.cifar10_dvs import CIFAR10DVS
 from spikingjelly.datasets.dvs128_gesture import DVS128Gesture
+import torch.nn.utils.prune as prune
 from torch import quantization,quantize_per_tensor,floor
 
 import torch
@@ -1128,26 +1129,34 @@ def main():
         _logger.addHandler(file_handler)
 
     try:
+        for name, module in model.named_modules():
+            if isinstance(module, torch.nn.Conv2d):
+                prune.l1_unstructured(module, name='weight', amount=0.15)
+                prune.remove(module, 'weight')
+            elif isinstance(module, torch.nn.Linear):
+                prune.l1_unstructured(module, name='weight', amount=0.2)
+                prune.remove(module, 'weight')
+        state_dict = model.state_dict()
+        # for name, param in model.named_parameters():
+        #     print(name, param.data.size())
         if not args.use_smplified_model:
             fuse_module(model)
-            state_dict = model.state_dict()
-            state_dict['block.0.attn.q_conv.weight'].data = floor(128 * state_dict['block.0.attn.q_conv.weight'].data)/128   #权重量化
             state_dict['block.0.attn.q_conv.bias'].data = floor(128 * state_dict['block.0.attn.q_conv.bias'].data)/128   #权重量化
-            state_dict['block.0.attn.k_conv.weight'].data = floor(128 * state_dict['block.0.attn.k_conv.weight'].data)/128   #权重量化
             state_dict['block.0.attn.k_conv.bias'].data = floor(128 * state_dict['block.0.attn.k_conv.bias'].data)/128   #权重量化
-            state_dict['block.0.attn.v_conv.weight'].data = floor(128 * state_dict['block.0.attn.v_conv.weight'].data)/128   #权重量化
             state_dict['block.0.attn.v_conv.bias'].data = floor(128 * state_dict['block.0.attn.v_conv.bias'].data)/128   #权重量化
-            state_dict['block.0.attn.talking_heads.weight'].data = floor(128 * state_dict['block.0.attn.talking_heads.weight'].data)/128   #权重量化
-            state_dict['block.0.attn.proj_conv.weight'].data = floor(128 * state_dict['block.0.attn.proj_conv.weight'].data)/128   #权重量化
-            state_dict['block.0.attn.proj_conv.bias'].data = floor(128 * state_dict['block.0.attn.proj_conv.bias'].data)/128   #权重量化
-            state_dict['block.0.mlp.fc1_conv.weight'].data = floor(128 * state_dict['block.0.mlp.fc1_conv.weight'].data)/128   #权重量化
-            state_dict['block.0.mlp.fc1_conv.bias'].data = floor(128 * state_dict['block.0.mlp.fc1_conv.bias'].data)/128   #权重量化
-            state_dict['block.0.mlp.fc2_conv.weight'].data = floor(128 * state_dict['block.0.mlp.fc2_conv.weight'].data)/128   #权重量化
-            state_dict['block.0.mlp.fc2_conv.bias'].data = floor(128 * state_dict['block.0.mlp.fc2_conv.bias'].data)/128   #权重量化
-            state_dict['head.weight'].data = floor(128 * state_dict['head.weight'].data)/128   #权重量化
-            state_dict['head.bias'].data = floor(128 * state_dict['head.bias'].data)/128   #权重量化
-            # model.load_state_dict(state_dict)
-
+            state_dict['block.0.attn.v_conv.weight'].data = floor(128 * state_dict['block.0.attn.v_conv.weight'].data)/128   #权重量化
+        # state_dict['block.0.attn.q_conv.weight'].data = floor(128 * state_dict['block.0.attn.q_conv.weight'].data)/128   #权重量化
+        # state_dict['block.0.attn.k_conv.weight'].data = floor(128 * state_dict['block.0.attn.k_conv.weight'].data)/128   #权重量化
+        state_dict['block.0.attn.talking_heads.weight'].data = floor(128 * state_dict['block.0.attn.talking_heads.weight'].data)/128   #权重量化
+        # state_dict['block.0.attn.proj_conv.weight'].data = floor(128 * state_dict['block.0.attn.proj_conv.weight'].data)/128   #权重量化
+        # state_dict['block.0.attn.proj_conv.bias'].data = floor(128 * state_dict['block.0.attn.proj_conv.bias'].data)/128   #权重量化
+        state_dict['block.0.mlp.fc1_conv.weight'].data = floor(128 * state_dict['block.0.mlp.fc1_conv.weight'].data)/128   #权重量化
+        state_dict['block.0.mlp.fc1_conv.bias'].data = floor(128 * state_dict['block.0.mlp.fc1_conv.bias'].data)/128   #权重量化
+        state_dict['block.0.mlp.fc2_conv.weight'].data = floor(128 * state_dict['block.0.mlp.fc2_conv.weight'].data)/128   #权重量化
+        state_dict['block.0.mlp.fc2_conv.bias'].data = floor(128 * state_dict['block.0.mlp.fc2_conv.bias'].data)/128   #权重量化
+        state_dict['head.weight'].data = floor(128 * state_dict['head.weight'].data)/128   #权重量化
+        state_dict['head.bias'].data = floor(128 * state_dict['head.bias'].data)/128   #权重量化
+        model.load_state_dict(state_dict)
         if args.distributed and args.dist_bn in ("broadcast", "reduce"):
             if args.local_rank == 0:
                 _logger.info("Distributing BatchNorm running means and vars")
