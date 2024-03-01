@@ -13,7 +13,7 @@ from spikingjelly.datasets.cifar10_dvs import CIFAR10DVS
 from spikingjelly.datasets.dvs128_gesture import DVS128Gesture
 import torch.nn.utils.prune as prune
 from torch import quantization,quantize_per_tensor,floor
-
+import copy
 import torch
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
@@ -1130,32 +1130,48 @@ def main():
 
     try:
         for name, module in model.named_modules():
-            if isinstance(module, torch.nn.Conv2d):
-                prune.l1_unstructured(module, name='weight', amount=0.15)
-                prune.remove(module, 'weight')
-            elif isinstance(module, torch.nn.Linear):
-                prune.l1_unstructured(module, name='weight', amount=0.2)
-                prune.remove(module, 'weight')
-        state_dict = model.state_dict()
-        # for name, param in model.named_parameters():
-        #     print(name, param.data.size())
-        if not args.use_smplified_model:
-            fuse_module(model)
-            state_dict['block.0.attn.q_conv.bias'].data = floor(128 * state_dict['block.0.attn.q_conv.bias'].data)/128   #权重量化
-            state_dict['block.0.attn.k_conv.bias'].data = floor(128 * state_dict['block.0.attn.k_conv.bias'].data)/128   #权重量化
-            state_dict['block.0.attn.v_conv.bias'].data = floor(128 * state_dict['block.0.attn.v_conv.bias'].data)/128   #权重量化
-            state_dict['block.0.attn.v_conv.weight'].data = floor(128 * state_dict['block.0.attn.v_conv.weight'].data)/128   #权重量化
-        # state_dict['block.0.attn.q_conv.weight'].data = floor(128 * state_dict['block.0.attn.q_conv.weight'].data)/128   #权重量化
-        # state_dict['block.0.attn.k_conv.weight'].data = floor(128 * state_dict['block.0.attn.k_conv.weight'].data)/128   #权重量化
-        state_dict['block.0.attn.talking_heads.weight'].data = floor(128 * state_dict['block.0.attn.talking_heads.weight'].data)/128   #权重量化
-        # state_dict['block.0.attn.proj_conv.weight'].data = floor(128 * state_dict['block.0.attn.proj_conv.weight'].data)/128   #权重量化
-        # state_dict['block.0.attn.proj_conv.bias'].data = floor(128 * state_dict['block.0.attn.proj_conv.bias'].data)/128   #权重量化
-        state_dict['block.0.mlp.fc1_conv.weight'].data = floor(128 * state_dict['block.0.mlp.fc1_conv.weight'].data)/128   #权重量化
-        state_dict['block.0.mlp.fc1_conv.bias'].data = floor(128 * state_dict['block.0.mlp.fc1_conv.bias'].data)/128   #权重量化
-        state_dict['block.0.mlp.fc2_conv.weight'].data = floor(128 * state_dict['block.0.mlp.fc2_conv.weight'].data)/128   #权重量化
-        state_dict['block.0.mlp.fc2_conv.bias'].data = floor(128 * state_dict['block.0.mlp.fc2_conv.bias'].data)/128   #权重量化
-        state_dict['head.weight'].data = floor(128 * state_dict['head.weight'].data)/128   #权重量化
-        state_dict['head.bias'].data = floor(128 * state_dict['head.bias'].data)/128   #权重量化
+            # if isinstance(module, torch.nn.Conv2d):
+            #     # prune.l1_unstructured(module, name='weight', amount=0.15)
+            #     prune.ln_structured(module, name='weight', n=2, amount=0.05, dim=1)
+            #     prune.remove(module, 'weight')
+            # print(name, ".attn." in name, ".mlp." in name)
+            if (".attn." in name or ".mlp." in name) and "conv" in name:
+                for rate in [0.05 + 0.01 * i for i in range(15)]:
+                    model_copy = copy.deepcopy(model)
+                    for name_copy, module in model_copy.named_modules():  # 似乎想通过name得到module只能用迭代器遍历，不能用索引
+                        if name_copy == name:
+                            print("True")
+                            copy_module = module
+                            break
+                        else:
+                            copy_module = None
+                    if copy_module is None:
+                        print(f"module {name} not found")
+                        exit()
+                    prune.ln_structured(copy_module, name='weight', n=2, amount=rate, dim=1)
+                    prune.remove(copy_module, 'weight')
+                    fuse_module(model_copy)
+                    state_dict = param_quantize(model_copy, bits=8, use_smplified_model=args.use_smplified_model)
+                    model_copy.load_state_dict(state_dict)
+                    eval_metrics = validate(
+                        model_copy,
+                        loader_eval,
+                        validate_loss_fn,
+                        args,
+                        output_dir=output_dir,
+                        amp_autocast=amp_autocast,
+                    )
+                    if args.local_rank == 0:
+                        _logger.info("top-1:", eval_metrics["top1"])
+                        with open('record.txt', 'a') as file:
+                            file.write("{} top-1 acc in rate {} is: {}\n".format(name, rate, eval_metrics["top1"]))
+            # elif isinstance(module, torch.nn.Linear):
+            #     prune.ln_structured(module, name='weight', n=2, amount=0.1, dim=1)
+            #     prune.remove(module, 'weight')
+        exit()
+        fuse_module(model)
+        # show_me_the_money(model, args.use_smplified_model)
+        state_dict = param_quantize(model, bits=8, use_smplified_model=args.use_smplified_model)
         model.load_state_dict(state_dict)
         if args.distributed and args.dist_bn in ("broadcast", "reduce"):
             if args.local_rank == 0:
@@ -1182,6 +1198,59 @@ def main():
                 distribute_bn(model_ema, args.world_size, args.dist_bn == "reduce")
     except KeyboardInterrupt:
         pass
+
+
+
+def show_me_the_money(model, use_smplified_model=False):
+    state_dict = model.state_dict()
+    # for name, param in model.named_parameters():
+    #     print(name, param.data.size())
+    print("q:")
+    print(state_dict['block.0.attn.q_conv.weight'].data.max().item(), state_dict['block.0.attn.q_conv.weight'].data.min().item())
+    print(state_dict['block.0.attn.q_conv.bias'].data.max().item(), state_dict['block.0.attn.q_conv.bias'].data.min().item())
+    print("k:")
+    print(state_dict['block.0.attn.k_conv.weight'].data.max().item(), state_dict['block.0.attn.k_conv.weight'].data.min().item())
+    print(state_dict['block.0.attn.k_conv.bias'].data.max().item(), state_dict['block.0.attn.k_conv.bias'].data.min().item())
+    if not use_smplified_model:
+        print("v:")
+        print(state_dict['block.0.attn.v_conv.weight'].data.max().item(), state_dict['block.0.attn.v_conv.weight'].data.min().item())
+        print(state_dict['block.0.attn.v_conv.bias'].data.max().item(), state_dict['block.0.attn.v_conv.bias'].data.min().item())
+    print("talking_heads:")
+    print(state_dict['block.0.attn.talking_heads.weight'].data.max().item(), state_dict['block.0.attn.talking_heads.weight'].data.min().item())
+    print("proj_conv:")
+    print(state_dict['block.0.attn.proj_conv.weight'].data.max().item(), state_dict['block.0.attn.proj_conv.weight'].data.min().item())
+    print(state_dict['block.0.attn.proj_conv.bias'].data.max().item(), state_dict['block.0.attn.proj_conv.bias'].data.min().item())
+    print("fc1_conv:")
+    print(state_dict['block.0.mlp.fc1_conv.weight'].data.max().item(), state_dict['block.0.mlp.fc1_conv.weight'].data.min().item())
+    print(state_dict['block.0.mlp.fc1_conv.bias'].data.max().item(), state_dict['block.0.mlp.fc1_conv.bias'].data.min().item())
+    print("fc2_conv:")
+    print(state_dict['block.0.mlp.fc2_conv.weight'].data.max().item(), state_dict['block.0.mlp.fc2_conv.weight'].data.min().item())
+    print(state_dict['block.0.mlp.fc2_conv.bias'].data.max().item(), state_dict['block.0.mlp.fc2_conv.bias'].data.min().item())
+    print("head:")
+    print(state_dict['head.weight'].data.max().item(), state_dict['head.weight'].data.min().item())
+    print(state_dict['head.bias'].data.max().item(), state_dict['head.bias'].data.min().item())
+
+
+def param_quantize(model, bits=8, use_smplified_model=False):
+    state_dict = model.state_dict()
+    quant_range = 2 ** bits
+    if not use_smplified_model:
+        state_dict['block.0.attn.v_conv.weight'].data = floor(quant_range * state_dict['block.0.attn.v_conv.weight'].data)/quant_range   #权重量化
+        state_dict['block.0.attn.v_conv.bias'].data = floor(quant_range * state_dict['block.0.attn.v_conv.bias'].data)/quant_range   #权重量化
+    state_dict['block.0.attn.q_conv.weight'].data = floor(quant_range * state_dict['block.0.attn.q_conv.weight'].data)/quant_range   #权重量化
+    state_dict['block.0.attn.q_conv.bias'].data = floor(quant_range * state_dict['block.0.attn.q_conv.bias'].data)/quant_range   #权重量化
+    state_dict['block.0.attn.k_conv.weight'].data = floor(quant_range * state_dict['block.0.attn.k_conv.weight'].data)/quant_range   #权重量化
+    state_dict['block.0.attn.k_conv.bias'].data = floor(quant_range * state_dict['block.0.attn.k_conv.bias'].data)/quant_range   #权重量化
+    state_dict['block.0.attn.talking_heads.weight'].data = floor(quant_range * state_dict['block.0.attn.talking_heads.weight'].data)/quant_range   #权重量化
+    state_dict['block.0.attn.proj_conv.weight'].data = floor(quant_range * state_dict['block.0.attn.proj_conv.weight'].data)/quant_range   #权重量化
+    state_dict['block.0.attn.proj_conv.bias'].data = floor(quant_range * state_dict['block.0.attn.proj_conv.bias'].data)/quant_range   #权重量化
+    state_dict['block.0.mlp.fc1_conv.weight'].data = floor(quant_range * state_dict['block.0.mlp.fc1_conv.weight'].data)/quant_range   #权重量化
+    state_dict['block.0.mlp.fc1_conv.bias'].data = floor(quant_range * state_dict['block.0.mlp.fc1_conv.bias'].data)/quant_range   #权重量化
+    state_dict['block.0.mlp.fc2_conv.weight'].data = floor(quant_range * state_dict['block.0.mlp.fc2_conv.weight'].data)/quant_range   #权重量化
+    state_dict['block.0.mlp.fc2_conv.bias'].data = floor(quant_range * state_dict['block.0.mlp.fc2_conv.bias'].data)/quant_range   #权重量化
+    state_dict['head.weight'].data = floor(quant_range * state_dict['head.weight'].data)/quant_range   #权重量化
+    state_dict['head.bias'].data = floor(quant_range * state_dict['head.bias'].data)/quant_range   #权重量化
+    return state_dict
 
 
 def validate(
