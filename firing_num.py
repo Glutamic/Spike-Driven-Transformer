@@ -18,6 +18,8 @@ import torch
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
 from torchvision import transforms
+import pandas as pd
+import csv
 
 from timm.data import create_dataset, create_loader, resolve_data_config
 from timm.models import (
@@ -1130,47 +1132,48 @@ def main():
 
     try:
         for name, module in model.named_modules():
+            # print(name, "is conv2d: ", isinstance(module, torch.nn.Conv2d), "is linear: ", isinstance(module, torch.nn.Linear))
+            # prune_test_and_eval(model, name, loader_eval, validate_loss_fn, args)  # use this to test prune method and eval
             # if isinstance(module, torch.nn.Conv2d):
-            #     # prune.l1_unstructured(module, name='weight', amount=0.15)
-            #     prune.ln_structured(module, name='weight', n=2, amount=0.05, dim=1)
-            #     prune.remove(module, 'weight')
-            # print(name, ".attn." in name, ".mlp." in name)
             if (".attn." in name or ".mlp." in name) and "conv" in name:
-                for rate in [0.05 + 0.01 * i for i in range(15)]:
-                    model_copy = copy.deepcopy(model)
-                    for name_copy, module in model_copy.named_modules():  # 似乎想通过name得到module只能用迭代器遍历，不能用索引
-                        if name_copy == name:
-                            print("True")
-                            copy_module = module
-                            break
-                        else:
-                            copy_module = None
-                    if copy_module is None:
-                        print(f"module {name} not found")
-                        exit()
-                    prune.ln_structured(copy_module, name='weight', n=2, amount=rate, dim=1)
-                    prune.remove(copy_module, 'weight')
-                    fuse_module(model_copy)
-                    state_dict = param_quantize(model_copy, bits=8, use_smplified_model=args.use_smplified_model)
-                    model_copy.load_state_dict(state_dict)
-                    eval_metrics = validate(
-                        model_copy,
-                        loader_eval,
-                        validate_loss_fn,
-                        args,
-                        output_dir=output_dir,
-                        amp_autocast=amp_autocast,
-                    )
-                    if args.local_rank == 0:
-                        _logger.info("top-1:", eval_metrics["top1"])
-                        with open('record.txt', 'a') as file:
-                            file.write("{} top-1 acc in rate {} is: {}\n".format(name, rate, eval_metrics["top1"]))
-            # elif isinstance(module, torch.nn.Linear):
-            #     prune.ln_structured(module, name='weight', n=2, amount=0.1, dim=1)
-            #     prune.remove(module, 'weight')
-        exit()
+                prune.l1_unstructured(module, name='weight', amount=0.15)
+                # prune.ln_structured(module, name='weight', n=2, amount=0.05, dim=1)
+                prune.remove(module, 'weight')
+            elif isinstance(module, torch.nn.Linear):
+                prune.l1_unstructured(module, name='weight', amount=0.2)
+                # prune.ln_structured(module, name='weight', n=2, amount=0.1, dim=1)
+                prune.remove(module, 'weight')
         fuse_module(model)
-        # show_me_the_money(model, args.use_smplified_model)
+        # statistics(model)
+        # show_me_the_money(model, args.use_smplified_model)  # use this to show the max and min of the weights
+        for quant_bit in [8, 7, 6 ,5, 4, 3, 2]:
+            model_copy = copy.deepcopy(model)
+            state_dict = qkv_quantize(model_copy, bits=8, use_smplified_model=args.use_smplified_model)
+            model_copy.load_state_dict(state_dict)
+            state_dict = proj_quantize(model_copy, bits=5)
+            model_copy.load_state_dict(state_dict)
+            state_dict = fc1_quantize(model_copy, bits=8)
+            model_copy.load_state_dict(state_dict)
+            state_dict = fc2_quantize(model_copy, bits=3)
+            model_copy.load_state_dict(state_dict)
+            state_dict = head_quantize(model_copy, bits=8)
+            model_copy.load_state_dict(state_dict)
+            eval_metrics = validate(
+                model_copy,
+                loader_eval,
+                validate_loss_fn,
+                args,
+                output_dir=output_dir,
+                amp_autocast=amp_autocast,
+            )
+            if args.local_rank == 0:
+                _logger.info("top-1:", eval_metrics["top1"])
+                with open('record.txt', 'a') as file:
+                    file.write("proj_quantize top-1 acc in quant_bit {} is: {}\n".format(quant_bit, eval_metrics["top1"]))
+            break
+        exit()
+        state_dict = qkv_quantize(model, bits=8, use_smplified_model=args.use_smplified_model)
+        model.load_state_dict(state_dict)
         state_dict = param_quantize(model, bits=8, use_smplified_model=args.use_smplified_model)
         model.load_state_dict(state_dict)
         if args.distributed and args.dist_bn in ("broadcast", "reduce"):
@@ -1200,9 +1203,106 @@ def main():
         pass
 
 
+def prune_test_and_eval(model, name, loader, loss_fn, args, output_dir=None, amp_autocast=suppress):
+    if (".attn." in name or ".mlp." in name) and "conv" in name:
+        for rate in [0.05 + 0.01 * i for i in range(16)]:
+            model_copy = copy.deepcopy(model)
+            for name_copy, module in model_copy.named_modules():  # 似乎想通过name得到module只能用迭代器遍历，不能用索引
+                if name_copy == name:
+                    print("True")
+                    copy_module = module
+                    break
+                else:
+                    copy_module = None
+            if copy_module is None:
+                print(f"module {name} not found")
+                exit()
+            prune.ln_structured(copy_module, name='weight', n=2, amount=rate, dim=1)
+            prune.remove(copy_module, 'weight')
+            fuse_module(model_copy)
+            state_dict = norm_quantize(model_copy, bits=8)
+            model_copy.load_state_dict(state_dict)
+            eval_metrics = validate(
+                model_copy,
+                loader,
+                loss_fn,
+                args,
+                output_dir=output_dir,
+                amp_autocast=amp_autocast,
+            )
+            if args.local_rank == 0:
+                _logger.info("top-1:", eval_metrics["top1"])
+                with open('record.txt', 'a') as file:
+                    file.write("{} top-1 acc in rate {} is: {}\n".format(name, rate, eval_metrics["top1"]))
+
+
+def statistics(model):
+    state_dict = model.state_dict()
+    bins = [i * 2**(-4) for i in range(1, 16)] + [i for i in range(1, 9)]
+    bins = [-x for x in bins[::-1]] + [0] + bins
+    print(bins)
+    data_dict = {}
+    for key in state_dict:
+        data_list = []
+        if "head" in key or ((".attn." in key or ".mlp." in key) and "conv" in key):
+            data = state_dict[key].data.cpu().numpy().flatten()
+            mask = data != 0
+            data_filtered = np.abs(data[mask])
+            mean_filter_data = np.mean(data_filtered)
+            print(f"去掉了{len(data)-len(data_filtered)}个0，{key} 去零后绝对值的平均值为：{mean_filter_data}")
+            std_filter_data = data_filtered - mean_filter_data
+            hist, _ = np.histogram(std_filter_data, bins)
+            for i in range(len(hist)):
+                data_list.append(hist[i])
+            data_dict[key] = data_list
+    with open('statistics_abs.csv', 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(data_dict.keys())
+        writer.writerows(zip(*data_dict.values()))
+    return
+
 
 def show_me_the_money(model, use_smplified_model=False):
     state_dict = model.state_dict()
+    bins = [i * 2**(-8) for i in range(1, 256)] + [i for i in range(1, 9)]
+    bins = [-x for x in bins[::-1]] + [0] + bins
+    print(bins[248:264])
+    data_dict = {}
+    for key in state_dict:
+        data_list = []
+        if (".attn." in key or ".mlp." in key) and "conv" in key:
+            # with open('statistics.txt', 'a') as file:
+            #     file.write(key + '\n')
+            data = state_dict[key].data.cpu().numpy().flatten()
+            mean = np.mean(data)
+            mean_abs = np.mean(np.abs(data))
+            print(f"{key} 的平均值为：{mean}, 绝对值的平均值为：{mean_abs}")
+            hist, bin_edges = np.histogram(data, bins)
+            for i in range(len(hist)):
+                # print(f"区间 [{bin_edges[i]:.5f}, {bin_edges[i+1]:.5f}] 的频数为：{hist[i]}")
+                data_list.append(hist[i])
+                # with open('statistics.txt', 'a') as file:
+                #     file.write(f"区间 [{bin_edges[i]:.5f}, {bin_edges[i+1]:.5f}] 的频数为：{hist[i]}\n")
+            data_dict[key] = data_list
+        elif "head" in key:
+            # with open('statistics.txt', 'a') as file:
+            #     file.write(key + '\n')
+            data = state_dict[key].data.cpu().numpy().flatten()
+            mean = np.mean(data)
+            mean_abs = np.mean(np.abs(data))
+            print(f"{key} 的平均值为：{mean}, 绝对值的平均值为：{mean_abs}")
+            hist, bin_edges = np.histogram(data, bins)
+            for i in range(len(hist)):
+                # print(f"区间 [{bin_edges[i]:.5f}, {bin_edges[i+1]:.5f}] 的频数为：{hist[i]}")
+                # with open('statistics.txt', 'a') as file:
+                #     file.write(f"区间 [{bin_edges[i]:.5f}, {bin_edges[i+1]:.5f}] 的频数为：{hist[i]}\n")
+                data_list.append(hist[i])
+            data_dict[key] = data_list
+    with open('statistics.csv', 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(data_dict.keys())
+        writer.writerows(zip(*data_dict.values()))
+    exit()
     # for name, param in model.named_parameters():
     #     print(name, param.data.size())
     print("q:")
@@ -1231,7 +1331,26 @@ def show_me_the_money(model, use_smplified_model=False):
     print(state_dict['head.bias'].data.max().item(), state_dict['head.bias'].data.min().item())
 
 
-def param_quantize(model, bits=8, use_smplified_model=False):
+def calculate_error(original_weight, quantized_weight):
+    # 计算绝对误差
+    abs_error = torch.abs(original_weight - quantized_weight)
+    
+    # 计算相对误差
+    relative_error = abs_error / torch.abs(original_weight)
+    
+    return abs_error, relative_error
+
+
+def  norm_quantize(model, bits=8):
+    state_dict = model.state_dict()
+    quant_range = 2 ** bits
+    for key in state_dict:
+        if "head" in key or ((".attn." in key or ".mlp." in key) and "conv" in key):
+            state_dict[key].data = floor(quant_range * state_dict[key].data)/quant_range
+    return state_dict
+
+
+def qkv_quantize(model, bits=8, use_smplified_model=False):
     state_dict = model.state_dict()
     quant_range = 2 ** bits
     if not use_smplified_model:
@@ -1241,13 +1360,34 @@ def param_quantize(model, bits=8, use_smplified_model=False):
     state_dict['block.0.attn.q_conv.bias'].data = floor(quant_range * state_dict['block.0.attn.q_conv.bias'].data)/quant_range   #权重量化
     state_dict['block.0.attn.k_conv.weight'].data = floor(quant_range * state_dict['block.0.attn.k_conv.weight'].data)/quant_range   #权重量化
     state_dict['block.0.attn.k_conv.bias'].data = floor(quant_range * state_dict['block.0.attn.k_conv.bias'].data)/quant_range   #权重量化
-    state_dict['block.0.attn.talking_heads.weight'].data = floor(quant_range * state_dict['block.0.attn.talking_heads.weight'].data)/quant_range   #权重量化
+    return state_dict
+
+
+def proj_quantize(model, bits=8):
+    state_dict = model.state_dict()
+    quant_range = 2 ** bits
+    # state_dict['block.0.attn.talking_heads.weight'].data = floor(quant_range * state_dict['block.0.attn.talking_heads.weight'].data)/quant_range   #权重量化
     state_dict['block.0.attn.proj_conv.weight'].data = floor(quant_range * state_dict['block.0.attn.proj_conv.weight'].data)/quant_range   #权重量化
     state_dict['block.0.attn.proj_conv.bias'].data = floor(quant_range * state_dict['block.0.attn.proj_conv.bias'].data)/quant_range   #权重量化
+    return state_dict
+
+def fc1_quantize(model, bits=8):
+    state_dict = model.state_dict()
+    quant_range = 2 ** bits
     state_dict['block.0.mlp.fc1_conv.weight'].data = floor(quant_range * state_dict['block.0.mlp.fc1_conv.weight'].data)/quant_range   #权重量化
     state_dict['block.0.mlp.fc1_conv.bias'].data = floor(quant_range * state_dict['block.0.mlp.fc1_conv.bias'].data)/quant_range   #权重量化
+    return state_dict
+
+def fc2_quantize(model, bits=8):
+    state_dict = model.state_dict()
+    quant_range = 2 ** bits
     state_dict['block.0.mlp.fc2_conv.weight'].data = floor(quant_range * state_dict['block.0.mlp.fc2_conv.weight'].data)/quant_range   #权重量化
     state_dict['block.0.mlp.fc2_conv.bias'].data = floor(quant_range * state_dict['block.0.mlp.fc2_conv.bias'].data)/quant_range   #权重量化
+    return state_dict
+
+def head_quantize(model, bits=8):
+    state_dict = model.state_dict()
+    quant_range = 2 ** bits
     state_dict['head.weight'].data = floor(quant_range * state_dict['head.weight'].data)/quant_range   #权重量化
     state_dict['head.bias'].data = floor(quant_range * state_dict['head.bias'].data)/quant_range   #权重量化
     return state_dict

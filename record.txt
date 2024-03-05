@@ -88,3 +88,38 @@ block.0.mlp.fc2_conv top-1 acc in rate 0.16 is: 73.09
 block.0.mlp.fc2_conv top-1 acc in rate 0.16999999999999998 is: 72.99
 block.0.mlp.fc2_conv top-1 acc in rate 0.18 is: 73.17
 block.0.mlp.fc2_conv top-1 acc in rate 0.19 is: 73.09
+qkv top-1 acc in quant_bit 4 is: 61.28
+qkv top-1 acc in quant_bit 5 is: 64.92
+qkv top-1 acc in quant_bit 6 is: 70.79
+qkv top-1 acc in quant_bit 7 is: 73.48
+qkv top-1 acc in quant_bit 8 is: 73.92
+qkv top-1 acc in quant_bit 9 is: 74.08
+qkv top-1 acc in quant_bit 10 is: 74.2
+qkv top-1 acc in quant_bit 8 is: 74.43
+qkv top-1 acc in quant_bit 8 is: 74.42
+fc2_quantize top-1 acc in quant_bit 8 is: 74.43
+fc2_quantize top-1 acc in quant_bit 7 is: 74.43
+fc2_quantize top-1 acc in quant_bit 6 is: 74.36
+fc2_quantize top-1 acc in quant_bit 5 is: 74.3
+fc2_quantize top-1 acc in quant_bit 4 is: 74.32
+fc2_quantize top-1 acc in quant_bit 3 is: 74.08
+fc2_quantize top-1 acc in quant_bit 2 is: 72.37
+fc2_quantize top-1 acc in quant_bit 1 is: 38.01
+fc1_quantize top-1 acc in quant_bit 8 is: 74.42
+fc1_quantize top-1 acc in quant_bit 7 is: 73.79
+fc1_quantize top-1 acc in quant_bit 6 is: 71.13
+fc1_quantize top-1 acc in quant_bit 5 is: 59.23
+fc1_quantize top-1 acc in quant_bit 4 is: 43.21
+fc1_quantize top-1 acc in quant_bit 3 is: 42.09
+fc1_quantize top-1 acc in quant_bit 2 is: 42.01
+proj_quantize top-1 acc in quant_bit 8 is: 74.43
+proj_quantize top-1 acc in quant_bit 7 is: 74.33
+proj_quantize top-1 acc in quant_bit 6 is: 74.49
+proj_quantize top-1 acc in quant_bit 5 is: 74.21
+proj_quantize top-1 acc in quant_bit 4 is: 74.33
+proj_quantize top-1 acc in quant_bit 3 is: 73.55
+proj_quantize top-1 acc in quant_bit 2 is: 70.85
+proj_quantize top-1 acc in quant_bit 4 and fc_2 in bit 4 is: 73.91
+proj_quantize top-1 acc in quant_bit 5 and fc_2 in bit 4 is: 74.25
+proj_quantize top-1 acc in quant_bit 4 and fc_2 in bit 5 is: 74.04
+proj_quantize top-1 acc in quant_bit 8 is: 73.92
