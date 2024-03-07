@@ -123,3 +123,20 @@ proj_quantize top-1 acc in quant_bit 4 and fc_2 in bit 4 is: 73.91
 proj_quantize top-1 acc in quant_bit 5 and fc_2 in bit 4 is: 74.25
 proj_quantize top-1 acc in quant_bit 4 and fc_2 in bit 5 is: 74.04
 proj_quantize top-1 acc in quant_bit 8 is: 73.92
+proj_quantize top-1 acc in quant_bit 8 is: 1.51
+proj_quantize top-1 acc in quant_bit 8 is: 1.51
+proj_quantize top-1 acc in quant_bit 8 is: 74.03
+proj_quantize top-1 acc in quant_bit 8 is: 74.03
+proj_quantize top-1 acc in quant_bit 8 is: 73.67
+proj_quantize top-1 acc in quant_bit 8 is: 73.67
+proj_quantize top-1 acc in quant_bit 8 is: 1.51
+proj_quantize top-1 acc in quant_bit 8 is: 73.05
+proj_quantize top-1 acc in quant_bit 8 is: 1.62
+proj_quantize top-1 acc in quant_bit 8 is: 73.06
+proj_quantize top-1 acc in quant_bit 8 is: 73.21
+proj_quantize top-1 acc in quant_bit 8 is: 1.63
+proj_quantize top-1 acc in quant_bit 8 is: 71.55
+proj_quantize top-1 acc in quant_bit 8 is: 73.63
+fc1_quantize log top-1 acc in quant_bit 4 is: 73.68
+proj_quantize top-1 acc in quant_bit 8 is: 73.89
+head and fc_1 in log quant bit 4, proj in bit 5 and fc_2 bit 4 top-1 acc is: 73.6

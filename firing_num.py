@@ -20,6 +20,7 @@ from torch.nn.parallel import DistributedDataParallel as NativeDDP
 from torchvision import transforms
 import pandas as pd
 import csv
+import struct
 
 from timm.data import create_dataset, create_loader, resolve_data_config
 from timm.models import (
@@ -1152,12 +1153,14 @@ def main():
             model_copy.load_state_dict(state_dict)
             state_dict = proj_quantize(model_copy, bits=5)
             model_copy.load_state_dict(state_dict)
-            state_dict = fc1_quantize(model_copy, bits=8)
+            state_dict = fc1_quantize(model_copy, bits=4)
             model_copy.load_state_dict(state_dict)
-            state_dict = fc2_quantize(model_copy, bits=3)
+            state_dict = fc2_quantize(model_copy, bits=4)
             model_copy.load_state_dict(state_dict)
             state_dict = head_quantize(model_copy, bits=8)
             model_copy.load_state_dict(state_dict)
+            # export_to_binary(state_dict)
+            # exit()
             eval_metrics = validate(
                 model_copy,
                 loader_eval,
@@ -1237,6 +1240,9 @@ def prune_test_and_eval(model, name, loader, loss_fn, args, output_dir=None, amp
 
 
 def statistics(model):
+    '''
+    统计模型中各层的权重分布，将权重的绝对值去零，减去平均值，并将结果保存到csv文件中
+    '''
     state_dict = model.state_dict()
     bins = [i * 2**(-4) for i in range(1, 16)] + [i for i in range(1, 9)]
     bins = [-x for x in bins[::-1]] + [0] + bins
@@ -1266,7 +1272,6 @@ def show_me_the_money(model, use_smplified_model=False):
     state_dict = model.state_dict()
     bins = [i * 2**(-8) for i in range(1, 256)] + [i for i in range(1, 9)]
     bins = [-x for x in bins[::-1]] + [0] + bins
-    print(bins[248:264])
     data_dict = {}
     for key in state_dict:
         data_list = []
@@ -1341,6 +1346,25 @@ def calculate_error(original_weight, quantized_weight):
     return abs_error, relative_error
 
 
+def write_tensor_to_binary_file(tensor, filename):
+    with open(filename, 'wb') as f:
+        f.write(tensor.cpu().numpy().tobytes())
+
+
+def export_to_binary(state_dict, folder='binary_files', prefix='quantized'):
+    os.makedirs(folder, exist_ok=True)
+
+    for key in state_dict:
+        if "head" in key or ((".attn." in key or ".mlp." in key) and "conv" in key):
+            tensor = state_dict[key]
+            filename = os.path.join(folder, f'{prefix}_{key}.bin')
+            # 检查文件是否存在，如果不存在则创建
+            if not os.path.exists(filename):
+                write_tensor_to_binary_file(tensor, filename)
+            else:
+                print(f"File {filename} already exists. Skipping...")
+
+
 def  norm_quantize(model, bits=8):
     state_dict = model.state_dict()
     quant_range = 2 ** bits
@@ -1348,6 +1372,23 @@ def  norm_quantize(model, bits=8):
         if "head" in key or ((".attn." in key or ".mlp." in key) and "conv" in key):
             state_dict[key].data = floor(quant_range * state_dict[key].data)/quant_range
     return state_dict
+
+
+def log_quantize(model, key):
+    state_dict = model.state_dict()
+    # 提取参数的正负号
+    sign = torch.sign(state_dict[key])
+    # 提取非零元素的索引
+    non_zero_indices = state_dict[key].data != 0
+    # 计算log2
+    state_dict[key].data = torch.where(non_zero_indices, 2 * torch.log2(torch.abs(state_dict[key].data)), state_dict[key].data)
+    # 四舍五入
+    state_dict[key].data = torch.round(state_dict[key].data)
+    # 截断到0到8的范围内
+    state_dict[key].data = torch.clamp(state_dict[key].data, -15, 15)
+    # 恢复量化
+    state_dict[key].data = torch.where(non_zero_indices, 2 ** (state_dict[key].data / 2) * sign, state_dict[key].data)
+    return state_dict[key].data
 
 
 def qkv_quantize(model, bits=8, use_smplified_model=False):
@@ -1375,6 +1416,7 @@ def fc1_quantize(model, bits=8):
     state_dict = model.state_dict()
     quant_range = 2 ** bits
     state_dict['block.0.mlp.fc1_conv.weight'].data = floor(quant_range * state_dict['block.0.mlp.fc1_conv.weight'].data)/quant_range   #权重量化
+    state_dict['block.0.mlp.fc1_conv.weight'].data = log_quantize(model, 'block.0.mlp.fc1_conv.weight')   # log量化，只需要4bit+一个符号位
     state_dict['block.0.mlp.fc1_conv.bias'].data = floor(quant_range * state_dict['block.0.mlp.fc1_conv.bias'].data)/quant_range   #权重量化
     return state_dict
 
@@ -1388,8 +1430,10 @@ def fc2_quantize(model, bits=8):
 def head_quantize(model, bits=8):
     state_dict = model.state_dict()
     quant_range = 2 ** bits
-    state_dict['head.weight'].data = floor(quant_range * state_dict['head.weight'].data)/quant_range   #权重量化
-    state_dict['head.bias'].data = floor(quant_range * state_dict['head.bias'].data)/quant_range   #权重量化
+    # state_dict['head.weight'].data = floor(quant_range * state_dict['head.weight'].data)/quant_range   #权重量化
+    state_dict['head.weight'].data = log_quantize(model, 'head.weight')   # log量化
+    # state_dict['head.bias'].data = floor(quant_range * state_dict['head.bias'].data)/quant_range   #权重量化
+    state_dict['head.bias'].data = log_quantize(model, 'head.bias')   # log量化
     return state_dict
 
 

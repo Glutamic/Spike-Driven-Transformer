@@ -9,3 +9,5 @@ pretrain.py
 *.tar
 *.npy
 *.zip
+*.bin
+binary_files/
