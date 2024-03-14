@@ -1145,22 +1145,28 @@ def main():
                 # prune.ln_structured(module, name='weight', n=2, amount=0.1, dim=1)
                 prune.remove(module, 'weight')
         fuse_module(model)
+        
         # statistics(model)
         # show_me_the_money(model, args.use_smplified_model)  # use this to show the max and min of the weights
         for quant_bit in [8, 7, 6 ,5, 4, 3, 2]:
             model_copy = copy.deepcopy(model)
-            state_dict = qkv_quantize(model_copy, bits=8, use_smplified_model=args.use_smplified_model)
+            state_dict = quantize(model, bits=8, qkv_bits=8, qkv_bias_bits=7, 
+                                proj_bits=5, proj_bias_bits=5, 
+                                fc1_bits=8, fc1_bias_bits=5, 
+                                fc2_bits=4, fc2_bias_bits=4, 
+                                head_bits=8, head_bias_bits=8)
             model_copy.load_state_dict(state_dict)
-            state_dict = proj_quantize(model_copy, bits=5)
-            model_copy.load_state_dict(state_dict)
-            state_dict = fc1_quantize(model_copy, bits=4)
-            model_copy.load_state_dict(state_dict)
-            state_dict = fc2_quantize(model_copy, bits=4)
-            model_copy.load_state_dict(state_dict)
-            state_dict = head_quantize(model_copy, bits=8)
-            model_copy.load_state_dict(state_dict)
-            # export_to_binary(state_dict)
-            # exit()
+            # state_dict = proj_quantize(model_copy, bits=5)
+            # model_copy.load_state_dict(state_dict)
+            # state_dict = fc1_quantize(model_copy, bits=8)
+            # model_copy.load_state_dict(state_dict)
+            # state_dict = fc2_quantize(model_copy, bits=4)
+            # model_copy.load_state_dict(state_dict)
+            # state_dict = head_quantize(model_copy, bits=8)
+            # model_copy.load_state_dict(state_dict)
+            export_to_binary(state_dict)
+            # show_me_the_money(model_copy, args.use_smplified_model)
+            exit()
             eval_metrics = validate(
                 model_copy,
                 loader_eval,
@@ -1278,6 +1284,7 @@ def show_me_the_money(model, use_smplified_model=False):
         if (".attn." in key or ".mlp." in key) and "conv" in key:
             # with open('statistics.txt', 'a') as file:
             #     file.write(key + '\n')
+            print(f"{key}的最大值为", state_dict[key].data.max().item(), f"{key}的最小值为", state_dict[key].data.min().item())
             data = state_dict[key].data.cpu().numpy().flatten()
             mean = np.mean(data)
             mean_abs = np.mean(np.abs(data))
@@ -1303,37 +1310,14 @@ def show_me_the_money(model, use_smplified_model=False):
                 #     file.write(f"区间 [{bin_edges[i]:.5f}, {bin_edges[i+1]:.5f}] 的频数为：{hist[i]}\n")
                 data_list.append(hist[i])
             data_dict[key] = data_list
-    with open('statistics.csv', 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(data_dict.keys())
-        writer.writerows(zip(*data_dict.values()))
-    exit()
-    # for name, param in model.named_parameters():
-    #     print(name, param.data.size())
-    print("q:")
-    print(state_dict['block.0.attn.q_conv.weight'].data.max().item(), state_dict['block.0.attn.q_conv.weight'].data.min().item())
-    print(state_dict['block.0.attn.q_conv.bias'].data.max().item(), state_dict['block.0.attn.q_conv.bias'].data.min().item())
-    print("k:")
-    print(state_dict['block.0.attn.k_conv.weight'].data.max().item(), state_dict['block.0.attn.k_conv.weight'].data.min().item())
-    print(state_dict['block.0.attn.k_conv.bias'].data.max().item(), state_dict['block.0.attn.k_conv.bias'].data.min().item())
-    if not use_smplified_model:
-        print("v:")
-        print(state_dict['block.0.attn.v_conv.weight'].data.max().item(), state_dict['block.0.attn.v_conv.weight'].data.min().item())
-        print(state_dict['block.0.attn.v_conv.bias'].data.max().item(), state_dict['block.0.attn.v_conv.bias'].data.min().item())
-    print("talking_heads:")
-    print(state_dict['block.0.attn.talking_heads.weight'].data.max().item(), state_dict['block.0.attn.talking_heads.weight'].data.min().item())
-    print("proj_conv:")
-    print(state_dict['block.0.attn.proj_conv.weight'].data.max().item(), state_dict['block.0.attn.proj_conv.weight'].data.min().item())
-    print(state_dict['block.0.attn.proj_conv.bias'].data.max().item(), state_dict['block.0.attn.proj_conv.bias'].data.min().item())
-    print("fc1_conv:")
-    print(state_dict['block.0.mlp.fc1_conv.weight'].data.max().item(), state_dict['block.0.mlp.fc1_conv.weight'].data.min().item())
-    print(state_dict['block.0.mlp.fc1_conv.bias'].data.max().item(), state_dict['block.0.mlp.fc1_conv.bias'].data.min().item())
-    print("fc2_conv:")
-    print(state_dict['block.0.mlp.fc2_conv.weight'].data.max().item(), state_dict['block.0.mlp.fc2_conv.weight'].data.min().item())
-    print(state_dict['block.0.mlp.fc2_conv.bias'].data.max().item(), state_dict['block.0.mlp.fc2_conv.bias'].data.min().item())
-    print("head:")
-    print(state_dict['head.weight'].data.max().item(), state_dict['head.weight'].data.min().item())
-    print(state_dict['head.bias'].data.max().item(), state_dict['head.bias'].data.min().item())
+
+    # write to csv file
+            
+    # with open('statistics.csv', 'w', newline='') as csvfile:
+    #     writer = csv.writer(csvfile)
+    #     writer.writerow(data_dict.keys())
+    #     writer.writerows(zip(*data_dict.values()))
+    # exit()
 
 
 def calculate_error(original_weight, quantized_weight):
@@ -1346,9 +1330,20 @@ def calculate_error(original_weight, quantized_weight):
     return abs_error, relative_error
 
 
-def write_tensor_to_binary_file(tensor, filename):
-    with open(filename, 'wb') as f:
-        f.write(tensor.cpu().numpy().tobytes())
+def bi_complement(n, bits, dec_bits):  # bits表示二进制位数，dec_bits表示小数点后位数
+    # 二进制补码
+    int_n = int(n * 2 ** dec_bits)
+    max_val = 2 ** (bits - 1) - 1
+    min_val = -2 ** (bits - 1)
+    if int_n > max_val:
+        int_n = max_val
+    elif int_n < min_val:
+        int_n = min_val
+    
+    if n >= 0:
+        return bin(int_n)[2:].zfill(bits)
+    else:
+        return bin(2 ** bits + int_n)[2:].zfill(bits)
 
 
 def export_to_binary(state_dict, folder='binary_files', prefix='quantized'):
@@ -1356,13 +1351,30 @@ def export_to_binary(state_dict, folder='binary_files', prefix='quantized'):
 
     for key in state_dict:
         if "head" in key or ((".attn." in key or ".mlp." in key) and "conv" in key):
-            tensor = state_dict[key]
-            filename = os.path.join(folder, f'{prefix}_{key}.bin')
-            # 检查文件是否存在，如果不存在则创建
-            if not os.path.exists(filename):
-                write_tensor_to_binary_file(tensor, filename)
-            else:
-                print(f"File {filename} already exists. Skipping...")
+            filename = os.path.join(folder, f'{prefix}_{key}.txt')
+            # size = state_dict[key].data.size()
+            data = state_dict[key].cpu().numpy().flatten()
+            data = data.tolist()
+            with open(filename, 'w') as f:
+                for i in range(len(data)):
+                    if "q_" in key or "k_" in key or "v_" in key:
+                        if "weight" in key:
+                            str = bi_complement(data[i], 8, 8)
+                        else:
+                            str = bi_complement(data[i], 8, 7)
+                    elif "fc1_" in key:
+                        if "weight" in key:
+                            str = bi_complement(data[i], 8, 8)
+                        else:
+                            str = bi_complement(data[i], 8, 5)
+                    elif "proj_" in key:
+                        str = bi_complement(data[i], 8, 5)
+                    elif "fc2_" in key:
+                        str = bi_complement(data[i], 8, 4)
+                    elif "head_" in key:
+                        str = bi_complement(data[i], 8, 8)
+                    f.write(str)
+                    f.write('\n')
 
 
 def  norm_quantize(model, bits=8):
@@ -1391,22 +1403,76 @@ def log_quantize(model, key):
     return state_dict[key].data
 
 
-def qkv_quantize(model, bits=8, use_smplified_model=False):
+def quantize(model, bits=8, qkv_bits=8, qkv_bias_bits=7, proj_bits=5, proj_bias_bits=5, fc1_bits=8, fc1_bias_bits=5, fc2_bits=4, fc2_bias_bits=4, head_bits=8, head_bias_bits=8, use_smplified_model=False):
     state_dict = model.state_dict()
-    quant_range = 2 ** bits
-    if not use_smplified_model:
-        state_dict['block.0.attn.v_conv.weight'].data = floor(quant_range * state_dict['block.0.attn.v_conv.weight'].data)/quant_range   #权重量化
-        state_dict['block.0.attn.v_conv.bias'].data = floor(quant_range * state_dict['block.0.attn.v_conv.bias'].data)/quant_range   #权重量化
-    state_dict['block.0.attn.q_conv.weight'].data = floor(quant_range * state_dict['block.0.attn.q_conv.weight'].data)/quant_range   #权重量化
-    state_dict['block.0.attn.q_conv.bias'].data = floor(quant_range * state_dict['block.0.attn.q_conv.bias'].data)/quant_range   #权重量化
-    state_dict['block.0.attn.k_conv.weight'].data = floor(quant_range * state_dict['block.0.attn.k_conv.weight'].data)/quant_range   #权重量化
-    state_dict['block.0.attn.k_conv.bias'].data = floor(quant_range * state_dict['block.0.attn.k_conv.bias'].data)/quant_range   #权重量化
+    for key in state_dict:
+        if "head" in key or ((".attn." in key or ".mlp." in key) and "conv" in key):
+            if "q_" in key or "k_" in key or "v_" in key:
+                if use_smplified_model and "block.0.attn.v_conv" in key:
+                        continue
+                if "weight" in key:
+                    quant_range = 2 ** qkv_bits
+                    max = 2 ** (bits - qkv_bits) - 2 ** (-qkv_bits)
+                    min = -2 ** (bits - qkv_bits) + 2 ** (-qkv_bits)
+                else:
+                    quant_range = 2 ** qkv_bias_bits
+                    max = 2 ** (bits - qkv_bias_bits) - 2 ** (-qkv_bias_bits)
+                    min = -2 ** (bits - qkv_bias_bits) + 2 ** (-qkv_bias_bits)
+                state_dict[key].clamp_(min=min, max=max)  # 根据小数位数截断整数范围
+                state_dict[key].data = floor(quant_range * state_dict[key].data)/quant_range   #权重量化
+            elif "proj_conv" in key:
+                if "weight" in key:
+                    quant_range = 2 ** proj_bits
+                    max = 2 ** (bits - proj_bits) - 2 ** (-proj_bits)
+                    min = -2 ** (bits - proj_bits) + 2 ** (-proj_bits)
+                else:
+                    quant_range = 2 ** proj_bias_bits
+                    max = 2 ** (bits - proj_bias_bits) - 2 ** (-proj_bias_bits)
+                    min = -2 ** (bits - proj_bias_bits) + 2 ** (-proj_bias_bits)
+                state_dict[key].clamp_(min=min, max=max)  # 根据小数位数截断整数范围
+                state_dict[key].data = floor(quant_range * state_dict[key].data)/quant_range   #权重量化
+            elif "fc1_" in key:
+                if "weight" in key:
+                    quant_range = 2 ** fc1_bits
+                    max = 2 ** (bits - fc1_bits) - 2 ** (-fc1_bits)
+                    min = -2 ** (bits - fc1_bits) + 2 ** (-fc1_bits)
+                else:
+                    quant_range = 2 ** fc1_bias_bits
+                    max = 2 ** (bits - fc1_bias_bits) - 2 ** (-fc1_bias_bits)
+                    min = -2 ** (bits - fc1_bias_bits) + 2 ** (-fc1_bias_bits)
+                state_dict[key].clamp_(min=min, max=max)  # 根据小数位数截断整数范围
+                state_dict[key].data = floor(quant_range * state_dict[key].data)/quant_range   #权重量化
+            elif "fc2_" in key:
+                if "weight" in key:
+                    quant_range = 2 ** fc2_bits
+                    max = 2 ** (bits - fc2_bits) - 2 ** (-fc2_bits)
+                    min = -2 ** (bits - fc2_bits) + 2 ** (-fc2_bits)
+                else:
+                    quant_range = 2 ** fc2_bias_bits
+                    max = 2 ** (bits - fc2_bias_bits) - 2 ** (-fc2_bias_bits)
+                    min = -2 ** (bits - fc2_bias_bits) + 2 ** (-fc2_bias_bits)
+                state_dict[key].clamp_(min=min, max=max)  # 根据小数位数截断整数范围
+                state_dict[key].data = floor(quant_range * state_dict[key].data)/quant_range   #权重量化
+            elif "head" in key:
+                if "weight" in key:
+                    quant_range = 2 ** head_bits
+                    max = 2 ** (bits - head_bits) - 2 ** (-head_bits)
+                    min = -2 ** (bits - head_bits) + 2 ** (-head_bits)
+                else:
+                    quant_range = 2 ** head_bias_bits
+                    max = 2 ** (bits - head_bias_bits) - 2 ** (-head_bias_bits)
+                    min = -2 ** (bits - head_bias_bits) + 2 ** (-head_bias_bits)
+                state_dict[key].clamp_(min=min, max=max)  # 根据小数位数截断整数范围
+                state_dict[key].data = floor(quant_range * state_dict[key].data)/quant_range   #权重量化
     return state_dict
+
 
 
 def proj_quantize(model, bits=8):
     state_dict = model.state_dict()
     quant_range = 2 ** bits
+    max = 2 ** (8 - bits) - 2 ** (-bits)
+    min = -2 ** (8 - bits) + 2 ** (-bits)
     # state_dict['block.0.attn.talking_heads.weight'].data = floor(quant_range * state_dict['block.0.attn.talking_heads.weight'].data)/quant_range   #权重量化
     state_dict['block.0.attn.proj_conv.weight'].data = floor(quant_range * state_dict['block.0.attn.proj_conv.weight'].data)/quant_range   #权重量化
     state_dict['block.0.attn.proj_conv.bias'].data = floor(quant_range * state_dict['block.0.attn.proj_conv.bias'].data)/quant_range   #权重量化
@@ -1415,14 +1481,18 @@ def proj_quantize(model, bits=8):
 def fc1_quantize(model, bits=8):
     state_dict = model.state_dict()
     quant_range = 2 ** bits
+    max = 2 ** (8 - bits) - 2 ** (-bits)
+    min = -2 ** (8 - bits) + 2 ** (-bits)
     state_dict['block.0.mlp.fc1_conv.weight'].data = floor(quant_range * state_dict['block.0.mlp.fc1_conv.weight'].data)/quant_range   #权重量化
-    state_dict['block.0.mlp.fc1_conv.weight'].data = log_quantize(model, 'block.0.mlp.fc1_conv.weight')   # log量化，只需要4bit+一个符号位
+    # state_dict['block.0.mlp.fc1_conv.weight'].data = log_quantize(model, 'block.0.mlp.fc1_conv.weight')   # log量化，只需要4bit+一个符号位
     state_dict['block.0.mlp.fc1_conv.bias'].data = floor(quant_range * state_dict['block.0.mlp.fc1_conv.bias'].data)/quant_range   #权重量化
     return state_dict
 
 def fc2_quantize(model, bits=8):
     state_dict = model.state_dict()
     quant_range = 2 ** bits
+    max = 2 ** (8 - bits) - 2 ** (-bits)
+    min = -2 ** (8 - bits) + 2 ** (-bits)
     state_dict['block.0.mlp.fc2_conv.weight'].data = floor(quant_range * state_dict['block.0.mlp.fc2_conv.weight'].data)/quant_range   #权重量化
     state_dict['block.0.mlp.fc2_conv.bias'].data = floor(quant_range * state_dict['block.0.mlp.fc2_conv.bias'].data)/quant_range   #权重量化
     return state_dict
@@ -1430,10 +1500,12 @@ def fc2_quantize(model, bits=8):
 def head_quantize(model, bits=8):
     state_dict = model.state_dict()
     quant_range = 2 ** bits
-    # state_dict['head.weight'].data = floor(quant_range * state_dict['head.weight'].data)/quant_range   #权重量化
-    state_dict['head.weight'].data = log_quantize(model, 'head.weight')   # log量化
-    # state_dict['head.bias'].data = floor(quant_range * state_dict['head.bias'].data)/quant_range   #权重量化
-    state_dict['head.bias'].data = log_quantize(model, 'head.bias')   # log量化
+    max = 2 ** (8 - bits) - 2 ** (-bits)
+    min = -2 ** (8 - bits) + 2 ** (-bits)
+    state_dict['head.weight'].data = floor(quant_range * state_dict['head.weight'].data)/quant_range   #权重量化
+    # state_dict['head.weight'].data = log_quantize(model, 'head.weight')   # log量化
+    state_dict['head.bias'].data = floor(quant_range * state_dict['head.bias'].data)/quant_range   #权重量化
+    # state_dict['head.bias'].data = log_quantize(model, 'head.bias')   # log量化
     return state_dict
 
 
